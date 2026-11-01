@@ -1,0 +1,49 @@
+name: flutter_onnxruntime_example
+description: "Demonstrates how to use the flutter_onnxruntime plugin."
+# The following line prevents the package from being accidentally published to
+# pub.dev using `flutter pub publish`. This is preferred for private packages.
+publish_to: 'none' # Remove this line if you wish to publish to pub.dev
+
+environment:
+  sdk: ^3.7.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  flutter_onnxruntime:
+    # When depending on this package from a real application you should use:
+    #   flutter_onnxruntime: ^x.y.z
+    # See https://dart.dev/tools/pub/dependencies#version-constraints
+    # The example app is bundled with the plugin so we use a path dependency on
+    # the parent directory to use the current plugin's version.
+    path: ../
+
+  # The following adds the Cupertino Icons font to your application.
+  # Use with the CupertinoIcons class for iOS style icons.
+  cupertino_icons: ^1.0.8
+  image_picker: ^1.1.2
+  image: ^4.2.0
+
+dev_dependencies:
+  integration_test:
+    sdk: flutter
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^5.0.0
+
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/models/addition_model.ort
+    - assets/models/transpose_and_avg_model_fp32.onnx
+    - assets/models/transpose_and_avg_model_int32.onnx
+    - assets/models/transpose_and_avg_model_int64.onnx
+    - assets/models/transpose_and_avg_model_fp16.onnx
+    - assets/models/string_concat_model.onnx
+    - assets/models/bool_not_model.onnx
+    - assets/models/hardswish_model.onnx
+    - assets/models/conditions_float32.onnx
