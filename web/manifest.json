@@ -1,6 +1,6 @@
 {
-    "name": "flutter_onnxruntime_example",
-    "short_name": "flutter_onnxruntime_example",
+    "name": "dent",
+    "short_name": "dent",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",

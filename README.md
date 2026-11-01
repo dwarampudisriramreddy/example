@@ -1,4 +1,4 @@
-# flutter_onnxruntime_example
+# dent
 
 ## Simple Addition Model
 
@@ -45,4 +45,4 @@ await session.close();
 
 ## More examples
 More examples could be found at [flutter_onnxruntime_examples](https://github.com/masicai/flutter-onnxruntime-examples) repo.
-# example
+# dent

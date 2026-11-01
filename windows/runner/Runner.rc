@@ -89,13 +89,13 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "com.masicai" "\0"
-            VALUE "FileDescription", "flutter_onnxruntime_example" "\0"
+            VALUE "CompanyName", "com.ram" "\0"
+            VALUE "FileDescription", "dent" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "flutter_onnxruntime_example" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2025 com.masicai. All rights reserved." "\0"
-            VALUE "OriginalFilename", "flutter_onnxruntime_example.exe" "\0"
-            VALUE "ProductName", "flutter_onnxruntime_example" "\0"
+            VALUE "InternalName", "dent" "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2025 com.ram. All rights reserved." "\0"
+            VALUE "OriginalFilename", "dent.exe" "\0"
+            VALUE "ProductName", "dent" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

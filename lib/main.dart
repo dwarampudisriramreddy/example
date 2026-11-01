@@ -4,25 +4,28 @@
 // This source code is licensed under the license found in the
 // LICENSE file in the root directory of this source tree.
 
-import 'dart:typed_data';
+import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart';
-import 'package:image/image.dart' as img;
-import 'package:flutter_onnxruntime/flutter_onnxruntime.dart';
+import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_onnxruntime/flutter_onnxruntime.dart';
+import 'package:image/image.dart' as img;
+import 'package:image_picker/image_picker.dart';
 
-const int _inputWidth = 640;
-const int _inputHeight = 640;
-const String _modelAsset = 'assets/models/conditions_float32.onnx';
-const String _inputName = 'images';
-const String _outputName = 'Identity';
-const int _maxDetections = 300;
-const double _defaultConfThreshold = 0.25;
+const int inputWidth = 640;
+const int inputHeight = 640;
+const String modelAsset = 'assets/models/conditions_float32.onnx';
+const String inputName = 'images';
+const String outputName = 'Identity';
+const int maxDetections = 300;
+const double defaultConfThreshold = 0.25;
 
-const List<String> CLASS_NAMES = [
+List<CameraDescription> cameras = [];
+
+const List<String> kClassNames = [
   "Normal",
   "Initial Caries",
   "Moderate Caries",
@@ -32,7 +35,7 @@ const List<String> CLASS_NAMES = [
   "Other Lesions"
 ];
 
-const Map<String, String> CLASS_DESCRIPTIONS = {
+const Map<String, String> kClassDescriptions = {
   "Normal": "Healthy tooth structure, no visible pathology.",
   "Initial Caries": "Early-stage enamel demineralization (white spot lesion).",
   "Moderate Caries": "Dentin involvement with a visible cavitated lesion.",
@@ -42,17 +45,17 @@ const Map<String, String> CLASS_DESCRIPTIONS = {
   "Other Lesions": "Other soft or hard tissue anomalies not listed above.",
 };
 
-final List<Color> _classColors = [
-  Colors.teal,
-  Colors.blue,
-  Colors.orange,
+final List<Color> classColors = [
+  Colors.green,
   Colors.red,
-  Colors.purple,
-  Colors.amber,
-  Colors.pink,
+  Colors.red,
+  Colors.red,
+  Colors.red,
+  Colors.red,
+  Colors.red,
 ];
 
-class _Detection {
+class Detection {
   final double x1;
   final double y1;
   final double x2;
@@ -60,17 +63,23 @@ class _Detection {
   final double score;
   final int classId;
 
-  _Detection(this.x1, this.y1, this.x2, this.y2, this.score, this.classId);
+  Detection(this.x1, this.y1, this.x2, this.y2, this.score, this.classId);
 
-  String get label => classId >= 0 && classId < CLASS_NAMES.length
-      ? CLASS_NAMES[classId]
+  String get label => classId >= 0 && classId < kClassNames.length
+      ? kClassNames[classId]
       : 'Class $classId';
 
   String get description =>
-      CLASS_DESCRIPTIONS[label] ?? 'No description available.';
+      kClassDescriptions[label] ?? 'No description available.';
 }
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  try {
+    cameras = await availableCameras();
+  } catch (e) {
+    debugPrint('Error initializing cameras: $e');
+  }
   runApp(const ToothDetectionApp());
 }
 
@@ -103,57 +112,53 @@ class DetectionHomePage extends StatefulWidget {
 }
 
 class _DetectionHomePageState extends State<DetectionHomePage> {
-  final OnnxRuntime _ort = OnnxRuntime();
-  OrtSession? _session;
-  bool _sessionReady = false;
-  bool _isLoading = false;
-  File? _imageFile;
-  int _imageWidth = 0;
-  int _imageHeight = 0;
-  List<_Detection> _detections = [];
-  double _confThreshold = _defaultConfThreshold;
-  String? _error;
+  final OnnxRuntime ort = OnnxRuntime();
+  OrtSession? session;
+  bool sessionReady = false;
+  bool isLoading = false;
+  File? imageFile;
+  int imageWidth = 0;
+  int imageHeight = 0;
+  List<Detection> detections = [];
+  double confThreshold = defaultConfThreshold;
+  String? error;
 
   @override
   void initState() {
     super.initState();
-    _initializeSession();
+    initializeSession();
   }
 
   @override
   void dispose() {
-    _session?.close();
+    session?.close();
     super.dispose();
   }
 
-  Future<void> _initializeSession() async {
+  Future<void> initializeSession() async {
     setState(() {
-      _sessionReady = false;
-      _error = null;
+      sessionReady = false;
+      error = null;
     });
     try {
       final options = OrtSessionOptions(
         providers: kIsWeb ? [OrtProvider.WEB_ASSEMBLY] : null,
       );
-      _session = await _ort.createSessionFromAsset(_modelAsset, options: options);
-      final inputInfo = await _session!.getInputInfo();
-      final outputInfo = await _session!.getOutputInfo();
-      debugPrint('Model inputs: $inputInfo');
-      debugPrint('Model outputs: $outputInfo');
+      session = await ort.createSessionFromAsset(modelAsset, options: options);
       if (mounted) {
-        setState(() => _sessionReady = true);
+        setState(() => sessionReady = true);
       }
     } catch (e) {
       final detail = e is PlatformException
           ? 'code: ${e.code}, message: ${e.message}'
           : e.toString();
       if (mounted) {
-        setState(() => _error = 'Failed to load model: $detail\n\nNote: on web, some ONNX operators are not supported by onnxruntime-web. Try a model converted with opset compatible with the web backend.');
+        setState(() => error = 'Failed to load model: $detail');
       }
     }
   }
 
-  Future<void> _pickImage(ImageSource source) async {
+  Future<void> pickImage(ImageSource source) async {
     final picker = ImagePicker();
     final picked = await picker.pickImage(
       source: source,
@@ -162,43 +167,42 @@ class _DetectionHomePageState extends State<DetectionHomePage> {
       maxHeight: 1600,
     );
     if (picked == null) return;
-    await _processImage(File(picked.path));
+    await processImage(File(picked.path));
   }
 
-  Future<void> _processImage(File file) async {
+  Future<void> processImage(File file) async {
     setState(() {
-      _isLoading = true;
-      _error = null;
-      _detections = [];
-      _imageFile = file;
+      isLoading = true;
+      error = null;
+      detections = [];
+      imageFile = file;
     });
 
     try {
       final bytes = await file.readAsBytes();
       final decoded = img.decodeImage(bytes);
       if (decoded == null) throw Exception('Unable to decode image');
-      _imageWidth = decoded.width;
-      _imageHeight = decoded.height;
+      imageWidth = decoded.width;
+      imageHeight = decoded.height;
 
-      if (!_sessionReady) await _initializeSession();
-      if (_session == null) throw Exception('ONNX session is not ready');
+      if (!sessionReady) await initializeSession();
+      if (session == null) throw Exception('ONNX session is not ready');
 
-      final inputTensor = await OrtValue.fromList(_preprocess(bytes), [1, _inputWidth, _inputHeight, 3]);
-      final outputs = await _session!.run({_inputName: inputTensor});
-      final outputTensor = outputs[_outputName];
-      if (outputTensor == null) throw Exception('Model output "$_outputName" not found');
+      final inputTensor = await OrtValue.fromList(preprocess(bytes), [1, inputWidth, inputHeight, 3]);
+      final outputs = await session!.run({inputName: inputTensor});
+      final outputTensor = outputs[outputName];
+      if (outputTensor == null) throw Exception('Model output not found');
 
       final flat = await outputTensor.asFlattenedList();
-      final detections = _postprocess(flat);
+      final result = postprocess(flat);
 
-      for (final tensor in [inputTensor, outputTensor]) {
-        await tensor.dispose();
-      }
+      await inputTensor.dispose();
+      await outputTensor.dispose();
 
       if (mounted) {
         setState(() {
-          _detections = detections;
-          _isLoading = false;
+          detections = result;
+          isLoading = false;
         });
       }
     } catch (e) {
@@ -207,21 +211,21 @@ class _DetectionHomePageState extends State<DetectionHomePage> {
           : e.toString();
       if (mounted) {
         setState(() {
-          _error = 'Detection failed: $detail';
-          _isLoading = false;
+          error = 'Detection failed: $detail';
+          isLoading = false;
         });
       }
     }
   }
 
-  Float32List _preprocess(Uint8List bytes) {
+  Float32List preprocess(Uint8List bytes) {
     final image = img.decodeImage(bytes);
-    if (image == null) throw Exception('Failed to decode image for preprocessing');
-    final resized = img.copyResize(image, width: _inputWidth, height: _inputHeight);
-    final data = Float32List(1 * _inputWidth * _inputHeight * 3);
+    if (image == null) throw Exception('Failed to decode image');
+    final resized = img.copyResize(image, width: inputWidth, height: inputHeight);
+    final data = Float32List(1 * inputWidth * inputHeight * 3);
     var idx = 0;
-    for (var y = 0; y < _inputHeight; y++) {
-      for (var x = 0; x < _inputWidth; x++) {
+    for (var y = 0; y < inputHeight; y++) {
+      for (var x = 0; x < inputWidth; x++) {
         final p = resized.getPixel(x, y);
         data[idx++] = p.r / 255.0;
         data[idx++] = p.g / 255.0;
@@ -231,10 +235,11 @@ class _DetectionHomePageState extends State<DetectionHomePage> {
     return data;
   }
 
-  List<_Detection> _postprocess(List<dynamic> flat) {
-    final detections = <_Detection>[];
-    for (var i = 0; i < _maxDetections; i++) {
+  List<Detection> postprocess(List<dynamic> flat) {
+    final result = <Detection>[];
+    for (var i = 0; i < maxDetections; i++) {
       final base = i * 6;
+      if (base + 5 >= flat.length) break;
       final x1 = (flat[base] as num).toDouble();
       final y1 = (flat[base + 1] as num).toDouble();
       final x2 = (flat[base + 2] as num).toDouble();
@@ -242,18 +247,17 @@ class _DetectionHomePageState extends State<DetectionHomePage> {
       final score = (flat[base + 4] as num).toDouble();
       final classId = ((flat[base + 5] as num).toDouble()).round();
 
-      if (score <= 0 || score <= _confThreshold) continue;
+      if (score <= 0 || score <= confThreshold) continue;
 
       var nx1 = x1;
       var ny1 = y1;
       var nx2 = x2;
       var ny2 = y2;
-      // Output may be in pixel coordinates relative to the 640x640 input.
       if (x1 > 1 || y1 > 1 || x2 > 1 || y2 > 1) {
-        nx1 /= _inputWidth;
-        ny1 /= _inputHeight;
-        nx2 /= _inputWidth;
-        ny2 /= _inputHeight;
+        nx1 /= inputWidth;
+        ny1 /= inputHeight;
+        nx2 /= inputWidth;
+        ny2 /= inputHeight;
       }
       nx1 = nx1.clamp(0.0, 1.0);
       ny1 = ny1.clamp(0.0, 1.0);
@@ -261,117 +265,119 @@ class _DetectionHomePageState extends State<DetectionHomePage> {
       ny2 = ny2.clamp(0.0, 1.0);
       if (nx2 <= nx1 || ny2 <= ny1) continue;
 
-      detections.add(_Detection(nx1, ny1, nx2, ny2, score, classId));
+      result.add(Detection(nx1, ny1, nx2, ny2, score, classId));
     }
-    detections.sort((a, b) => b.score.compareTo(a.score));
-    return detections;
+    result.sort((a, b) => b.score.compareTo(a.score));
+    return result;
   }
 
-  Widget _buildImageCanvas(BuildContext context, double canvasSide) {
-    if (_imageFile == null || _imageWidth == 0 || _imageHeight == 0) {
+  Widget buildImageCanvas(BuildContext context) {
+    if (imageFile == null || imageWidth == 0 || imageHeight == 0) {
       return Container(
-        width: canvasSide,
-        height: canvasSide,
-        color: Colors.grey.shade100,
+        color: Colors.black,
         child: const Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.image_outlined, size: 48, color: Colors.grey),
+              Icon(Icons.image_outlined, size: 48, color: Colors.white54),
               SizedBox(height: 8),
-              Text('No image selected', style: TextStyle(color: Colors.grey)),
+              Text('No image selected', style: TextStyle(color: Colors.white54)),
             ],
           ),
         ),
       );
     }
 
-    final scale = (canvasSide / _imageWidth).clamp(0, double.infinity);
-    final clampedScale = (canvasSide / _imageHeight).clamp(0, double.infinity);
-    final fitScale = scale < clampedScale ? scale : clampedScale;
-    final dispW = (_imageWidth * fitScale).toDouble();
-    final dispH = (_imageHeight * fitScale).toDouble();
-    final offsetX = ((canvasSide - dispW) / 2).toDouble();
-    final offsetY = ((canvasSide - dispH) / 2).toDouble();
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final canvasW = constraints.maxWidth;
+        final canvasH = constraints.maxHeight;
+        final scaleW = canvasW / imageWidth;
+        final scaleH = canvasH / imageHeight;
+        final fitScale = scaleW < scaleH ? scaleW : scaleH;
+        final dispW = imageWidth * fitScale;
+        final dispH = imageHeight * fitScale;
+        final offsetX = (canvasW - dispW) / 2;
+        final offsetY = (canvasH - dispH) / 2;
 
-    return Stack(
-      children: [
-        Container(
-          width: canvasSide,
-          height: canvasSide,
-          color: Colors.grey.shade100,
-          alignment: Alignment.center,
-          child: Image.file(
-            _imageFile!,
-            width: dispW,
-            height: dispH,
-            fit: BoxFit.fill,
-          ),
-        ),
-        ..._detections.map((det) {
-          final color = _classColors[det.classId % _classColors.length];
-          final left = (offsetX + det.x1 * dispW).clamp(0.0, canvasSide - 1.0).toDouble();
-          final top = (offsetY + det.y1 * dispH).clamp(0.0, canvasSide - 1.0).toDouble();
-          final width = ((det.x2 - det.x1) * dispW).clamp(0.0, canvasSide - left).toDouble();
-          final height = ((det.y2 - det.y1) * dispH).clamp(0.0, canvasSide - top).toDouble();
-          return Positioned(
-            left: left,
-            top: top,
-            child: SizedBox(
-              width: width,
-              height: height,
-              child: Stack(
-                children: [
-                  Positioned.fill(
-                    child: Container(
-                      decoration: BoxDecoration(
-                        border: Border.all(color: color, width: 3),
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                    ),
-                  ),
-                  Positioned(
-                    left: 0,
-                    top: -20,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: color,
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: Text(
-                        '${det.label} ${(det.score * 100).toStringAsFixed(0)}%',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            Container(
+              color: Colors.black,
+              alignment: Alignment.center,
+              child: Image.file(
+                imageFile!,
+                width: dispW,
+                height: dispH,
+                fit: BoxFit.fill,
               ),
             ),
-          );
-        }),
-      ],
+            ...detections.map((det) {
+              final color = classColors[det.classId % classColors.length];
+              final left = (offsetX + det.x1 * dispW).clamp(0.0, canvasW - 1.0);
+              final top = (offsetY + det.y1 * dispH).clamp(0.0, canvasH - 1.0);
+              final width = ((det.x2 - det.x1) * dispW).clamp(0.0, canvasW - left);
+              final height = ((det.y2 - det.y1) * dispH).clamp(0.0, canvasH - top);
+              return Positioned(
+                left: left,
+                top: top,
+                child: SizedBox(
+                  width: width,
+                  height: height,
+                  child: Stack(
+                    children: [
+                      Positioned.fill(
+                        child: Container(
+                          decoration: BoxDecoration(
+                            border: Border.all(color: color, width: 3),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                        ),
+                      ),
+                      Positioned(
+                        left: 0,
+                        top: -22,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: color,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            '${det.label} ${(det.score * 100).toStringAsFixed(0)}%',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }),
+          ],
+        );
+      },
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final size = MediaQuery.of(context).size;
-    final canvasSide = (size.width < size.height ? size.width : size.height) - 32;
-    final clampedCanvas = canvasSide.clamp(200.0, 640.0);
-
     return Scaffold(
+      backgroundColor: Colors.black,
       appBar: AppBar(
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
         title: const Text('Tooth Condition Detection'),
         actions: [
-          if (_sessionReady)
+          if (sessionReady)
             IconButton(
               icon: const Icon(Icons.refresh),
-              onPressed: _initializeSession,
+              onPressed: initializeSession,
               tooltip: 'Reload model',
             ),
         ],
@@ -381,6 +387,7 @@ class _DetectionHomePageState extends State<DetectionHomePage> {
           Card(
             margin: const EdgeInsets.all(12),
             elevation: 2,
+            color: Colors.grey.shade900,
             child: Padding(
               padding: const EdgeInsets.all(12),
               child: Column(
@@ -392,7 +399,7 @@ class _DetectionHomePageState extends State<DetectionHomePage> {
                         child: ElevatedButton.icon(
                           icon: const Icon(Icons.photo_library),
                           label: const Text('Gallery'),
-                          onPressed: _isLoading ? null : () => _pickImage(ImageSource.gallery),
+                          onPressed: isLoading ? null : () => pickImage(ImageSource.gallery),
                         ),
                       ),
                       const SizedBox(width: 10),
@@ -400,7 +407,28 @@ class _DetectionHomePageState extends State<DetectionHomePage> {
                         child: ElevatedButton.icon(
                           icon: const Icon(Icons.camera_alt),
                           label: const Text('Camera'),
-                          onPressed: _isLoading ? null : () => _pickImage(ImageSource.camera),
+                          onPressed: isLoading ? null : () => pickImage(ImageSource.camera),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          icon: const Icon(Icons.videocam),
+                          label: const Text('Live'),
+                          onPressed: isLoading || !sessionReady
+                              ? null
+                              : () {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (context) => LiveDetectionPage(
+                                        ort: ort,
+                                        session: session!,
+                                        confThreshold: confThreshold,
+                                      ),
+                                    ),
+                                  );
+                                },
                         ),
                       ),
                     ],
@@ -408,38 +436,38 @@ class _DetectionHomePageState extends State<DetectionHomePage> {
                   const SizedBox(height: 12),
                   Row(
                     children: [
-                      const Text('Confidence: '),
+                      const Text('Confidence: ', style: TextStyle(color: Colors.white)),
                       Expanded(
                         child: Slider(
-                          value: _confThreshold,
+                          value: confThreshold,
                           min: 0.0,
                           max: 1.0,
                           divisions: 100,
-                          label: (_confThreshold * 100).round().toString(),
-                          onChanged: _isLoading
+                          label: (confThreshold * 100).round().toString(),
+                          onChanged: isLoading
                               ? null
-                              : (value) => setState(() => _confThreshold = value),
+                              : (value) => setState(() => confThreshold = value),
                         ),
                       ),
-                      Text('${(_confThreshold * 100).round()}%'),
+                      Text('${(confThreshold * 100).round()}%', style: const TextStyle(color: Colors.white)),
                     ],
                   ),
-                  if (_error != null)
+                  if (error != null)
                     Padding(
                       padding: const EdgeInsets.only(top: 10),
-                      child: Text(_error!, style: const TextStyle(color: Colors.red)),
+                      child: Text(error!, style: const TextStyle(color: Colors.red)),
                     ),
-                  if (_imageFile != null && !_isLoading)
+                  if (imageFile != null && !isLoading)
                     Padding(
                       padding: const EdgeInsets.only(top: 10),
                       child: Row(
                         children: [
-                          const Icon(Icons.sync, size: 18),
+                          const Icon(Icons.sync, size: 18, color: Colors.white),
                           const SizedBox(width: 6),
                           Expanded(
                             child: Text(
-                              'Detected ${_detections.length} tooth condition(s)',
-                              style: const TextStyle(fontWeight: FontWeight.w600),
+                              'Detected ${detections.length} tooth condition(s)',
+                              style: const TextStyle(fontWeight: FontWeight.w600, color: Colors.white),
                               overflow: TextOverflow.ellipsis,
                             ),
                           ),
@@ -452,19 +480,19 @@ class _DetectionHomePageState extends State<DetectionHomePage> {
           ),
           Expanded(
             child: Center(
-              child: _isLoading
-                  ? const CircularProgressIndicator()
-                  : _buildImageCanvas(context, clampedCanvas),
+              child: isLoading
+                  ? const CircularProgressIndicator(color: Colors.white)
+                  : buildImageCanvas(context),
             ),
           ),
-          if (_detections.isNotEmpty)
-            Expanded(
-              flex: 2,
+          if (detections.isNotEmpty)
+            SizedBox(
+              height: 200,
               child: ListView.builder(
-                itemCount: _detections.length,
+                itemCount: detections.length,
                 itemBuilder: (context, i) {
-                  final det = _detections[i];
-                  final color = _classColors[det.classId % _classColors.length];
+                  final det = detections[i];
+                  final color = classColors[det.classId % classColors.length];
                   return ListTile(
                     leading: CircleAvatar(
                       backgroundColor: color.withValues(alpha: 0.2),
@@ -475,10 +503,11 @@ class _DetectionHomePageState extends State<DetectionHomePage> {
                     ),
                     title: Text(
                       det.label,
-                      style: const TextStyle(fontWeight: FontWeight.bold),
+                      style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
                     ),
                     subtitle: Text(
-                      '${det.description}\nConfidence: ${(det.score * 100).toStringAsFixed(1)}%  •  Box: [${(det.x1 * 100).round()}, ${(det.y1 * 100).round()}, ${(det.x2 * 100).round()}, ${(det.y2 * 100).round()}]',
+                      '${det.description}\nConfidence: ${(det.score * 100).toStringAsFixed(1)}%',
+                      style: const TextStyle(color: Colors.white70),
                     ),
                     trailing: Text(
                       '${(det.score * 100).toStringAsFixed(1)}%',
@@ -493,13 +522,247 @@ class _DetectionHomePageState extends State<DetectionHomePage> {
             ),
         ],
       ),
-      floatingActionButton: _sessionReady && _imageFile != null && !_isLoading
+      floatingActionButton: sessionReady && imageFile != null && !isLoading
           ? FloatingActionButton.extended(
               icon: const Icon(Icons.search),
               label: const Text('Detect'),
-              onPressed: () => _processImage(_imageFile!),
+              onPressed: () => processImage(imageFile!),
             )
           : null,
+    );
+  }
+}
+
+class LiveDetectionPage extends StatefulWidget {
+  final OnnxRuntime ort;
+  final OrtSession session;
+  final double confThreshold;
+
+  const LiveDetectionPage({
+    super.key,
+    required this.ort,
+    required this.session,
+    required this.confThreshold,
+  });
+
+  @override
+  State<LiveDetectionPage> createState() => _LiveDetectionPageState();
+}
+
+class _LiveDetectionPageState extends State<LiveDetectionPage> {
+  CameraController? controller;
+  bool isInitialized = false;
+  bool isDetecting = false;
+  List<Detection> detections = [];
+  Timer? timer;
+
+  @override
+  void initState() {
+    super.initState();
+    initializeCamera();
+  }
+
+  Future<void> initializeCamera() async {
+    if (cameras.isEmpty) return;
+    controller = CameraController(
+      cameras[0],
+      ResolutionPreset.medium,
+      enableAudio: false,
+      imageFormatGroup: ImageFormatGroup.yuv420,
+    );
+    try {
+      await controller!.initialize();
+      if (mounted) {
+        setState(() {
+          isInitialized = true;
+        });
+        startDetection();
+      }
+    } catch (e) {
+      debugPrint('Error initializing camera: $e');
+    }
+  }
+
+  void startDetection() {
+    timer = Timer.periodic(const Duration(milliseconds: 500), (timer) {
+      if (!isDetecting && isInitialized && controller != null && controller!.value.isInitialized) {
+        captureAndDetect();
+      }
+    });
+  }
+
+  Future<void> captureAndDetect() async {
+    if (isDetecting) return;
+    isDetecting = true;
+    try {
+      final image = await controller!.takePicture();
+      final bytes = await File(image.path).readAsBytes();
+      final decoded = img.decodeImage(bytes);
+      if (decoded != null) {
+        final inputTensor = await OrtValue.fromList(preprocess(bytes), [1, inputWidth, inputHeight, 3]);
+        final outputs = await widget.session.run({inputName: inputTensor});
+        final outputTensor = outputs[outputName];
+        if (outputTensor != null) {
+          final flat = await outputTensor.asFlattenedList();
+          final result = postprocessLive(flat);
+          if (mounted) {
+            setState(() {
+              detections = result;
+            });
+          }
+          await inputTensor.dispose();
+          await outputTensor.dispose();
+        }
+      }
+      await File(image.path).delete();
+    } catch (e) {
+      debugPrint('Detection error: $e');
+    } finally {
+      isDetecting = false;
+    }
+  }
+
+  Float32List preprocess(Uint8List bytes) {
+    final image = img.decodeImage(bytes);
+    if (image == null) throw Exception('Failed to decode image');
+    final resized = img.copyResize(image, width: inputWidth, height: inputHeight);
+    final data = Float32List(1 * inputWidth * inputHeight * 3);
+    var idx = 0;
+    for (var y = 0; y < inputHeight; y++) {
+      for (var x = 0; x < inputWidth; x++) {
+        final p = resized.getPixel(x, y);
+        data[idx++] = p.r / 255.0;
+        data[idx++] = p.g / 255.0;
+        data[idx++] = p.b / 255.0;
+      }
+    }
+    return data;
+  }
+
+  List<Detection> postprocessLive(List<dynamic> flat) {
+    final result = <Detection>[];
+    for (var i = 0; i < maxDetections; i++) {
+      final base = i * 6;
+      if (base + 5 >= flat.length) break;
+      final x1 = (flat[base] as num).toDouble();
+      final y1 = (flat[base + 1] as num).toDouble();
+      final x2 = (flat[base + 2] as num).toDouble();
+      final y2 = (flat[base + 3] as num).toDouble();
+      final score = (flat[base + 4] as num).toDouble();
+      final classId = ((flat[base + 5] as num).toDouble()).round();
+
+      if (score <= 0 || score <= widget.confThreshold) continue;
+
+      var nx1 = x1;
+      var ny1 = y1;
+      var nx2 = x2;
+      var ny2 = y2;
+      if (x1 > 1 || y1 > 1 || x2 > 1 || y2 > 1) {
+        nx1 /= inputWidth;
+        ny1 /= inputHeight;
+        nx2 /= inputWidth;
+        ny2 /= inputHeight;
+      }
+      nx1 = nx1.clamp(0.0, 1.0);
+      ny1 = ny1.clamp(0.0, 1.0);
+      nx2 = nx2.clamp(0.0, 1.0);
+      ny2 = ny2.clamp(0.0, 1.0);
+      if (nx2 <= nx1 || ny2 <= ny1) continue;
+
+      result.add(Detection(nx1, ny1, nx2, ny2, score, classId));
+    }
+    result.sort((a, b) => b.score.compareTo(a.score));
+    return result;
+  }
+
+  @override
+  void dispose() {
+    timer?.cancel();
+    controller?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!isInitialized || controller == null) {
+      return const Scaffold(
+        backgroundColor: Colors.black,
+        body: Center(
+          child: CircularProgressIndicator(color: Colors.white),
+        ),
+      );
+    }
+
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          CameraPreview(controller!),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final canvasW = constraints.maxWidth;
+              final canvasH = constraints.maxHeight;
+              return Stack(
+                children: detections.map((det) {
+                  final color = classColors[det.classId % classColors.length];
+                  final left = (det.x1 * canvasW).clamp(0.0, canvasW - 1.0);
+                  final top = (det.y1 * canvasH).clamp(0.0, canvasH - 1.0);
+                  final width = ((det.x2 - det.x1) * canvasW).clamp(0.0, canvasW - left);
+                  final height = ((det.y2 - det.y1) * canvasH).clamp(0.0, canvasH - top);
+                  return Positioned(
+                    left: left,
+                    top: top,
+                    child: SizedBox(
+                      width: width,
+                      height: height,
+                      child: Stack(
+                        children: [
+                          Positioned.fill(
+                            child: Container(
+                              decoration: BoxDecoration(
+                                border: Border.all(color: color, width: 3),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                            ),
+                          ),
+                          Positioned(
+                            left: 0,
+                            top: -22,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: color,
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text(
+                                '${det.label} ${(det.score * 100).toStringAsFixed(0)}%',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                }).toList(),
+              );
+            },
+          ),
+          Positioned(
+            top: 40,
+            left: 10,
+            child: IconButton(
+              icon: const Icon(Icons.arrow_back, color: Colors.white, size: 30),
+              onPressed: () => Navigator.pop(context),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
